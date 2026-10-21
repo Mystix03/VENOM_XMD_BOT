@@ -28,7 +28,7 @@ export const env = {
   prefix: optional('PREFIX', '.'),
   ownerNumbers: optional('OWNER_NUMBER', '')
     .split(',')
-    .map((n) => n.trim())
+    .map((n) => n.trim().replace(/[^0-9]/g, ''))
     .filter(Boolean),
   loginMethod: optional('LOGIN_METHOD', 'both') as LoginMethod,
   pairingNumber: optional('PAIRING_NUMBER', ''),

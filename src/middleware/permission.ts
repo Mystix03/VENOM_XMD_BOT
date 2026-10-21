@@ -9,7 +9,8 @@ import { accessRepo } from '../database/repositories/access.repo';
 
 /** True if the number is listed as a bot owner in .env. */
 export function isOwner(number: string): boolean {
-  return env.ownerNumbers.includes(number);
+  const clean = String(number ?? '').replace(/[^0-9]/g, '');
+  return Boolean(clean) && env.ownerNumbers.includes(clean);
 }
 
 /** True if the number is an owner or a sudo user. */
