@@ -28,7 +28,24 @@ const ytsearch: Command = {
             )}\n   🔗 ${v.url}`,
         )
         .join('\n\n');
-      await reply(sock, msg, `🔎 *YouTube results for* "${text}"\n\n${out}\n\n💡 _Use *play <title>* or *video <title>* to download._`);
+      const caption = `🔎 *YouTube results for* "${text}"\n\n${out}\n\n💡 _Use *play <title>* or *video <title>* to download._`;
+
+      const topThumb = list[0]?.thumbnail;
+      if (topThumb) {
+        try {
+          await sock.sendMessage(
+            msg.chat,
+            { image: { url: topThumb }, caption },
+            { quoted: msg.raw },
+          );
+          await react(sock, msg, '✅');
+          return;
+        } catch {
+          // Fallback to text reply below if sending image fails
+        }
+      }
+
+      await reply(sock, msg, caption);
       await react(sock, msg, '✅');
     } catch {
       await react(sock, msg, '❌');
