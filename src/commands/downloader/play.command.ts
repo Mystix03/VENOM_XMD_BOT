@@ -29,12 +29,13 @@ const play: Command = {
       stage = 'download';
       dl = await ytMp3(v.url);
       stage = 'WhatsApp upload';
+      const ext = dl.url.endsWith('.m4a') ? 'm4a' : 'mp3';
       await sock.sendMessage(
         msg.chat,
         {
           audio: { url: dl.url },
           mimetype: dl.mimetype || 'audio/mpeg',
-          fileName: `${v.title}.mp3`.replace(/[\\/:*?"<>|]/g, ''),
+          fileName: `${v.title}.${ext}`.replace(/[\\/:*?"<>|]/g, ''),
         },
         { quoted: msg.raw },
       );

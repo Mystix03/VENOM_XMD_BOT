@@ -26,6 +26,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { logger } from '../utils/logger';
 
 const DC = 'https://apis.davidcyriltech.my.id';
 const UA =
@@ -376,32 +377,47 @@ async function ytDlpDownload(
   const output = `${prefix}.%(ext)s`;
 
   try {
+    const t0 = Date.now();
+    logger.info({ kind, videoUrl }, 'Starting yt-dlp media extraction');
+
     if (kind === 'audio') {
+      // Use native AAC stream (.m4a) when available to avoid heavy CPU re-encoding on free cloud tiers.
       await runYtDlpDownload(videoUrl, [
         '--output',
         output,
         '--format',
-        'bestaudio/best',
+        'bestaudio[ext=m4a]/bestaudio',
         '--extract-audio',
         '--audio-format',
-        'mp3',
-        '--audio-quality',
-        '5',
+        'm4a',
         '--ffmpeg-location',
         ffmpegPath.path,
         '--no-playlist',
         '--no-progress',
+        '--concurrent-fragments',
+        '5',
         '--max-filesize',
         '50M',
       ]);
 
-      const file = `${prefix}.mp3`;
-      if (!fs.existsSync(file)) throw new Error('yt-dlp produced no MP3 file');
+      const candidates = (await fs.promises.readdir(path.dirname(prefix)))
+        .filter((name) => name.startsWith(path.basename(prefix) + '.'))
+        .filter((name) => !name.endsWith('.part'));
+      const name = candidates[0];
+      if (!name) throw new Error('yt-dlp produced no audio file');
+      const file = path.join(path.dirname(prefix), name);
+      const ext = path.extname(name).toLowerCase();
+      const mimetype =
+        ext === '.m4a' ? 'audio/mp4' : ext === '.mp3' ? 'audio/mpeg' : 'audio/ogg';
+      logger.info(
+        { elapsedMs: Date.now() - t0, file, mimetype },
+        'Audio extraction finished',
+      );
       return {
         title: '',
         url: file,
-        quality: 'MP3',
-        mimetype: 'audio/mpeg',
+        quality: 'Audio',
+        mimetype,
         cleanup: () => cleanupYtDlp(prefix),
       };
     }
@@ -419,6 +435,8 @@ async function ytDlpDownload(
       ffmpegPath.path,
       '--no-playlist',
       '--no-progress',
+      '--concurrent-fragments',
+      '5',
       '--max-filesize',
       '50M',
     ]);
@@ -428,6 +446,11 @@ async function ytDlpDownload(
       .filter((name) => !name.endsWith('.part'));
     const name = candidates[0];
     if (!name) throw new Error('yt-dlp produced no video file');
+    const file = path.join(path.dirname(prefix), name);
+    logger.info(
+      { elapsedMs: Date.now() - t0, file },
+      'Video extraction finished',
+    );
     return {
       title: '',
       url: path.join(path.dirname(prefix), name),
