@@ -72,12 +72,31 @@ function getCookieArgs(): string[] {
   if (cookieFile && fs.existsSync(cookieFile)) {
     return ['--cookies', cookieFile];
   }
-  const cookies =
+  let cookies =
     process.env.YOUTUBE_COOKIES?.trim() || process.env.COOKIES?.trim();
   if (cookies) {
+    if (cookies.startsWith('base64:')) {
+      try {
+        cookies = Buffer.from(cookies.slice(7), 'base64').toString('utf8');
+      } catch {
+        /* ignore decode error */
+      }
+    } else if (!cookies.includes('\n') && !cookies.includes('\t') && cookies.length > 60) {
+      try {
+        const decoded = Buffer.from(cookies, 'base64').toString('utf8');
+        if (decoded.includes('\t') || decoded.includes('youtube.com')) {
+          cookies = decoded;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
     try {
       const target = path.join(os.tmpdir(), 'venom-yt-cookies.txt');
-      fs.writeFileSync(target, cookies, 'utf8');
+      // Normalize line endings to standard Unix LF for Netscape cookie parsing
+      const normalized = cookies.replace(/\r\n/g, '\n').trim() + '\n';
+      fs.writeFileSync(target, normalized, 'utf8');
       return ['--cookies', target];
     } catch {
       /* ignore */
@@ -147,14 +166,21 @@ async function runYtDlpDownload(
   args: string[],
 ): Promise<string> {
   const isYouTube = /youtu\.?be/i.test(target);
+  const withCookies = getCookieArgs().length > 0;
   const clientStrategies = isYouTube
-    ? [
-        ['--extractor-args', 'youtube:player-client=ios,android'],
-        ['--extractor-args', 'youtube:player-client=android,mweb'],
-        ['--extractor-args', 'youtube:player-client=mweb,ios'],
-        ['--extractor-args', 'youtube:player-client=tv'],
-        [],
-      ]
+    ? withCookies
+      ? [
+          [],
+          ['--extractor-args', 'youtube:player-client=web,mweb'],
+          ['--extractor-args', 'youtube:player-client=ios,android'],
+        ]
+      : [
+          ['--extractor-args', 'youtube:player-client=ios,android'],
+          ['--extractor-args', 'youtube:player-client=android,mweb'],
+          ['--extractor-args', 'youtube:player-client=mweb,ios'],
+          ['--extractor-args', 'youtube:player-client=tv'],
+          [],
+        ]
     : [[]];
 
   let lastError: unknown;
@@ -225,9 +251,12 @@ function ytDlpVideo(entry: any): YtVideo {
 
 /** Search with yt-dlp when yt-search's YouTube page parser is unavailable. */
 async function ytDlpSearch(query: string, limit: number): Promise<YtVideo[]> {
+  const extractor =
+    getCookieArgs().length > 0
+      ? []
+      : ['--extractor-args', 'youtube:player-client=ios,android'];
   const result: any = await runYtDlpJson(`ytsearch${limit}:${query}`, [
-    '--extractor-args',
-    'youtube:player-client=ios,android',
+    ...extractor,
     '--dump-single-json',
     '--skip-download',
     '--flat-playlist',
@@ -277,9 +306,12 @@ export async function resolveYt(input: string): Promise<YtVideo> {
         ago: r.ago || '',
       };
     } catch {
+      const extractor =
+        getCookieArgs().length > 0
+          ? []
+          : ['--extractor-args', 'youtube:player-client=ios,android'];
       const result: any = await runYtDlpJson(input, [
-        '--extractor-args',
-        'youtube:player-client=ios,android',
+        ...extractor,
         '--dump-single-json',
         '--skip-download',
       ]);
