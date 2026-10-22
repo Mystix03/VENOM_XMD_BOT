@@ -37,7 +37,9 @@ export async function startConnection(): Promise<void> {
 
   // Give the VTU payment poller a way to message users proactively
   // ("✅ your wallet don credit") without an active command.
-  registerVtuNotifier((jid, text) => sendText(sock, jid, text));
+  registerVtuNotifier(async (jid, text) => {
+    await sendText(sock, jid, text);
+  });
 
   // Remember our own number so payment redirects (wa.me) land the customer
   // back in this chat after paying.
