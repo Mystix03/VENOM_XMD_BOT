@@ -67,6 +67,25 @@ function ytDlpBinaryPath(): string {
   return process.env.YT_DLP_PATH?.trim() || MANAGED_YT_DLP;
 }
 
+function getCookieArgs(): string[] {
+  const cookieFile = process.env.YOUTUBE_COOKIE_FILE?.trim();
+  if (cookieFile && fs.existsSync(cookieFile)) {
+    return ['--cookies', cookieFile];
+  }
+  const cookies =
+    process.env.YOUTUBE_COOKIES?.trim() || process.env.COOKIES?.trim();
+  if (cookies) {
+    try {
+      const target = path.join(os.tmpdir(), 'venom-yt-cookies.txt');
+      fs.writeFileSync(target, cookies, 'utf8');
+      return ['--cookies', target];
+    } catch {
+      /* ignore */
+    }
+  }
+  return [];
+}
+
 /** Execute the verified standalone binary installed by the project postinstall. */
 async function runYtDlp(target: string, args: string[]): Promise<string> {
   const binary = ytDlpBinaryPath();
@@ -84,6 +103,7 @@ async function runYtDlp(target: string, args: string[]): Promise<string> {
     '2',
     '--force-ipv4',
     ...ytDlpRuntimeArgs(),
+    ...getCookieArgs(),
   ];
   const proxy = process.env.YOUTUBE_PROXY?.trim();
   if (proxy) common.push('--proxy', proxy);
@@ -118,29 +138,40 @@ async function runYtDlpJson(target: string, args: string[]): Promise<any> {
 }
 
 /**
- * Shared cloud-host IPs are sometimes challenged on yt-dlp's default YouTube
- * client. Retry public videos through clients that can still expose a basic
- * progressive stream without account cookies or a manually supplied PO token.
+ * Shared cloud-host IPs are challenged on YouTube's default web client.
+ * Attempt extraction using mobile clients (iOS, Android, mweb) which do not
+ * enforce the same strict browser bot challenges on datacenter IPs.
  */
 async function runYtDlpDownload(
   target: string,
   args: string[],
 ): Promise<string> {
-  try {
-    return await runYtDlp(target, args);
-  } catch (err) {
-    const message = String(err instanceof Error ? err.message : err);
-    const challenged =
-      /sign in to confirm|not a bot|page needs to be reloaded|no video formats/i.test(
-        message,
-      );
-    if (!challenged || !/youtu\.?be/i.test(target)) throw err;
-    return runYtDlp(target, [
-      '--extractor-args',
-      'youtube:player_client=android_vr,web_embedded',
-      ...args,
-    ]);
+  const isYouTube = /youtu\.?be/i.test(target);
+  const clientStrategies = isYouTube
+    ? [
+        ['--extractor-args', 'youtube:player-client=ios,android'],
+        ['--extractor-args', 'youtube:player-client=android,mweb'],
+        ['--extractor-args', 'youtube:player-client=mweb,ios'],
+        ['--extractor-args', 'youtube:player-client=tv'],
+        [],
+      ]
+    : [[]];
+
+  let lastError: unknown;
+  for (const strategy of clientStrategies) {
+    try {
+      return await runYtDlp(target, [...strategy, ...args]);
+    } catch (err) {
+      lastError = err;
+      const message = String(err instanceof Error ? err.message : err);
+      const challenged =
+        /sign in to confirm|not a bot|page needs to be reloaded|no video formats/i.test(
+          message,
+        );
+      if (!challenged || !isYouTube) throw err;
+    }
   }
+  throw lastError;
 }
 
 async function getJson<T = any>(
@@ -195,6 +226,8 @@ function ytDlpVideo(entry: any): YtVideo {
 /** Search with yt-dlp when yt-search's YouTube page parser is unavailable. */
 async function ytDlpSearch(query: string, limit: number): Promise<YtVideo[]> {
   const result: any = await runYtDlpJson(`ytsearch${limit}:${query}`, [
+    '--extractor-args',
+    'youtube:player-client=ios,android',
     '--dump-single-json',
     '--skip-download',
     '--flat-playlist',
@@ -245,6 +278,8 @@ export async function resolveYt(input: string): Promise<YtVideo> {
       };
     } catch {
       const result: any = await runYtDlpJson(input, [
+        '--extractor-args',
+        'youtube:player-client=ios,android',
         '--dump-single-json',
         '--skip-download',
       ]);
@@ -345,7 +380,7 @@ async function ytDlpDownload(
       '--output',
       output,
       '--format',
-      'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best',
+      'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[ext=mp4]/best',
       '--merge-output-format',
       'mp4',
       '--ffmpeg-location',
