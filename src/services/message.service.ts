@@ -1,4 +1,4 @@
-import type { WASocket, AnyMessageContent } from '@whiskeysockets/baileys';
+import type { WASocket, AnyMessageContent, proto } from '@whiskeysockets/baileys';
 import type { SerializedMessage } from '../types/message.type';
 
 /** Send plain text to any chat. */
@@ -6,8 +6,8 @@ export async function sendText(
   sock: WASocket,
   jid: string,
   text: string,
-): Promise<void> {
-  await sock.sendMessage(jid, { text });
+) {
+  return await sock.sendMessage(jid, { text });
 }
 
 /** Reply to a message, quoting the original. */
@@ -15,8 +15,18 @@ export async function reply(
   sock: WASocket,
   msg: SerializedMessage,
   text: string,
-): Promise<void> {
-  await sock.sendMessage(msg.chat, { text }, { quoted: msg.raw });
+) {
+  return await sock.sendMessage(msg.chat, { text }, { quoted: msg.raw });
+}
+
+/** Edit a previously sent message if supported by the chat. */
+export async function editMessage(
+  sock: WASocket,
+  chat: string,
+  key: proto.IMessageKey,
+  text: string,
+) {
+  return await sock.sendMessage(chat, { text, edit: key }).catch(() => undefined);
 }
 
 /** React to a message with an emoji. */

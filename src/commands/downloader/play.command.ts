@@ -1,5 +1,5 @@
 import type { Command } from '../../types/command.type';
-import { reply, react } from '../../services/message.service';
+import { reply, react, editMessage } from '../../services/message.service';
 import { resolveYt, ytMp3, formatViews } from '../../services/download.service';
 import { logger } from '../../utils/logger';
 import { isSudo } from '../../middleware/permission';
@@ -8,7 +8,7 @@ const play: Command = {
   name: 'play',
   aliases: ['song', 'ytmp3', 'yta'],
   category: 'downloader',
-  description: 'Search YouTube and send the audio (MP3) of the top result.',
+  description: 'Search YouTube and send the audio (MP3/M4A) of the top result.',
   usage: 'play <song name or YouTube url>',
   async run({ sock, msg, text }) {
     if (!text) {
@@ -18,16 +18,52 @@ const play: Command = {
     await react(sock, msg, '🔎');
     let dl: Awaited<ReturnType<typeof ytMp3>> | undefined;
     let stage = 'search';
+    let progressTimer: NodeJS.Timeout | undefined;
+
     try {
       const v = await resolveYt(text);
-      await reply(
+      const baseInfo = `🎵 *${v.title}*\n👤 ${v.author}\n⏱️ ${v.duration}  •  👁️ ${formatViews(v.views)}`;
+
+      const statusMsg = await reply(
         sock,
         msg,
-        `🎵 *${v.title}*\n👤 ${v.author}\n⏱️ ${v.duration}  •  👁️ ${formatViews(v.views)}\n\n_Downloading audio…_`,
+        `${baseInfo}\n\n⏳ _Downloading audio… (0s)_`,
       );
       await react(sock, msg, '⏳');
+
       stage = 'download';
+      const t0 = Date.now();
+
+      // Live progress timer: tick every 2.5 seconds with live elapsed seconds
+      if (statusMsg?.key) {
+        let tick = 0;
+        const spinner = ['⏳', '⌛'];
+        progressTimer = setInterval(() => {
+          tick++;
+          const elapsed = ((Date.now() - t0) / 1000).toFixed(0);
+          const icon = spinner[tick % spinner.length];
+          editMessage(
+            sock,
+            msg.chat,
+            statusMsg.key,
+            `${baseInfo}\n\n${icon} _Downloading audio… (${elapsed}s)_`,
+          );
+        }, 2500);
+      }
+
       dl = await ytMp3(v.url);
+      clearInterval(progressTimer);
+
+      const downloadSec = ((Date.now() - t0) / 1000).toFixed(1);
+      if (statusMsg?.key) {
+        await editMessage(
+          sock,
+          msg.chat,
+          statusMsg.key,
+          `${baseInfo}\n\n⚡ _Downloaded in ${downloadSec}s! Uploading to WhatsApp…_`,
+        );
+      }
+
       stage = 'WhatsApp upload';
       const ext = dl.url.endsWith('.m4a') ? 'm4a' : 'mp3';
       await sock.sendMessage(
@@ -40,7 +76,17 @@ const play: Command = {
         { quoted: msg.raw },
       );
       await react(sock, msg, '✅');
+
+      if (statusMsg?.key) {
+        await editMessage(
+          sock,
+          msg.chat,
+          statusMsg.key,
+          `${baseInfo}\n\n✅ _Completed in ${downloadSec}s!_`,
+        );
+      }
     } catch (err) {
+      clearInterval(progressTimer);
       logger.error({ err, stage, query: text }, '.play failed');
       await react(sock, msg, '❌');
       const ownerDetail = isSudo(msg.senderNumber)
@@ -54,9 +100,11 @@ const play: Command = {
         `❌ Could not fetch that song (${stage} failed). Please try again shortly.${ownerDetail}`,
       );
     } finally {
+      clearInterval(progressTimer);
       await dl?.cleanup?.();
     }
   },
 };
 
 export default play;
+
