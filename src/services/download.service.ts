@@ -172,8 +172,10 @@ async function runYtDlpDownload(
     ? withCookies
       ? [
           [],
-          ['--extractor-args', 'youtube:player-client=web,mweb'],
+          ['--extractor-args', 'youtube:player-client=mweb,web'],
+          ['--extractor-args', 'youtube:player-client=android,web'],
           ['--extractor-args', 'youtube:player-client=ios,android'],
+          ['--extractor-args', 'youtube:player-client=tv'],
         ]
       : [
           ['--extractor-args', 'youtube:player-client=ios,android'],
@@ -191,11 +193,16 @@ async function runYtDlpDownload(
     } catch (err) {
       lastError = err;
       const message = String(err instanceof Error ? err.message : err);
-      const challenged =
-        /sign in to confirm|not a bot|page needs to be reloaded|no video formats/i.test(
+      // Abort only if the video itself is deleted, private, or completely unavailable
+      const isFatal =
+        /this video (has been removed|is private|is unavailable)|video unavailable|private video/i.test(
           message,
         );
-      if (!challenged || !isYouTube) throw err;
+      if (isFatal || !isYouTube) throw err;
+      logger.warn(
+        { strategy, err: message.slice(-200) },
+        'yt-dlp extraction issue with client strategy, retrying next strategy...',
+      );
     }
   }
   throw lastError;
@@ -342,8 +349,18 @@ export interface DlResult {
   cleanup?: () => Promise<void>;
 }
 
-/** Remove every yt-dlp artefact for a unique output prefix. */
-async function cleanupYtDlp(prefix: string): Promise<void> {
+/** Remove every yt-dlp artefact for a unique output prefix and explicit file. */
+async function cleanupYtDlp(prefix: string, explicitFile?: string): Promise<void> {
+  if (explicitFile) {
+    try {
+      if (fs.existsSync(explicitFile)) {
+        await fs.promises.unlink(explicitFile);
+        logger.info({ file: explicitFile }, 'Deleted local media download after upload');
+      }
+    } catch {
+      /* ignore */
+    }
+  }
   const dir = path.dirname(prefix);
   const base = path.basename(prefix);
   try {
@@ -418,7 +435,7 @@ async function ytDlpDownload(
         url: file,
         quality: 'Audio',
         mimetype,
-        cleanup: () => cleanupYtDlp(prefix),
+        cleanup: () => cleanupYtDlp(prefix, file),
       };
     }
 
@@ -456,7 +473,7 @@ async function ytDlpDownload(
       url: path.join(path.dirname(prefix), name),
       quality: 'up to 720p',
       mimetype: 'video/mp4',
-      cleanup: () => cleanupYtDlp(prefix),
+      cleanup: () => cleanupYtDlp(prefix, file),
     };
   } catch (err) {
     await cleanupYtDlp(prefix);
