@@ -483,21 +483,55 @@ export async function ytDlpDownload(
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function downloadRemoteToTemp(url: string): Promise<string> {
+async function downloadRemoteToTemp(
+  url: string,
+  extraHeaders?: Record<string, string>,
+): Promise<string> {
   const tempFile = path.join(
     os.tmpdir(),
     `venom-dl-${crypto.randomUUID()}.mp3`,
   );
-  const response = await axios.get<ArrayBuffer>(url, {
-    responseType: 'arraybuffer',
-    headers: {
-      'User-Agent': UA,
-      Accept: '*/*',
-    },
-    timeout: 35000,
-  });
-  await fs.promises.writeFile(tempFile, Buffer.from(response.data));
-  return tempFile;
+
+  let targetUrl = url.trim();
+  if (targetUrl.startsWith('//')) {
+    targetUrl = `https:${targetUrl}`;
+  } else if (targetUrl.startsWith('/')) {
+    targetUrl = `https://youtube-mp36.p.rapidapi.com${targetUrl}`;
+  }
+
+  const reqHeaders: Record<string, string> = {
+    'User-Agent': UA,
+    Accept: '*/*',
+    ...(extraHeaders || {}),
+  };
+
+  try {
+    const response = await axios.get<ArrayBuffer>(targetUrl, {
+      responseType: 'arraybuffer',
+      headers: reqHeaders,
+      timeout: 45000,
+      maxRedirects: 5,
+    });
+    await fs.promises.writeFile(tempFile, Buffer.from(response.data));
+    return tempFile;
+  } catch (err: any) {
+    // If request with extra headers failed (e.g. 404 from external CDN redirect), retry cleanly without them
+    if (extraHeaders && Object.keys(extraHeaders).length > 0) {
+      try {
+        const response2 = await axios.get<ArrayBuffer>(targetUrl, {
+          responseType: 'arraybuffer',
+          headers: { 'User-Agent': UA, Accept: '*/*' },
+          timeout: 45000,
+          maxRedirects: 5,
+        });
+        await fs.promises.writeFile(tempFile, Buffer.from(response2.data));
+        return tempFile;
+      } catch {
+        /* let original error throw */
+      }
+    }
+    throw err;
+  }
 }
 
 /** RapidAPI YouTube MP3 fast path (youtube-mp36 by gitnol) */
@@ -522,7 +556,7 @@ async function rapidApiMp3(videoUrl: string): Promise<DlResult | null> {
       });
 
       logger.info(
-        { id, attempt, status: data?.status, msg: data?.msg },
+        { id, attempt, status: data?.status, msg: data?.msg, link: data?.link },
         'RapidAPI response poll',
       );
 
@@ -531,7 +565,7 @@ async function rapidApiMp3(videoUrl: string): Promise<DlResult | null> {
 
       if (isReady) {
         try {
-          const localFile = await downloadRemoteToTemp(data.link);
+          const localFile = await downloadRemoteToTemp(data.link, headers);
           logger.info(
             { id, title: data.title, attempt },
             'RapidAPI MP3 downloaded to local file successfully',
@@ -545,7 +579,7 @@ async function rapidApiMp3(videoUrl: string): Promise<DlResult | null> {
           };
         } catch (downloadErr) {
           logger.warn(
-            { downloadErr: String(downloadErr) },
+            { downloadErr: String(downloadErr), link: data?.link },
             'RapidAPI CDN link not ready yet, retrying poll...',
           );
         }
@@ -560,10 +594,111 @@ async function rapidApiMp3(videoUrl: string): Promise<DlResult | null> {
       await wait(2500);
     }
     return null;
-  } catch (err) {
-    logger.warn({ err: String(err) }, 'RapidAPI MP3 fast path failed, falling back to local');
+  } catch (err: any) {
+    const apiMsg = err?.response?.data?.message || err?.message || String(err);
+    logger.warn({ err: apiMsg }, 'RapidAPI MP3 fast path failed, falling back to cloud providers');
     return null;
   }
+}
+
+/** Free public cloud API fallbacks that bypass YouTube datacenter BotGuard */
+async function cloudMp3Fallback(videoUrl: string): Promise<DlResult | null> {
+  const id = extractYtId(videoUrl);
+  const providers = [
+    {
+      name: 'GiftedTech',
+      url: `https://api.giftedtech.my.id/api/download/ytmp3?apikey=gifted-md&url=${encodeURIComponent(videoUrl)}`,
+      extract: (d: any) => d?.result?.download_url || d?.result?.url,
+      title: (d: any) => d?.result?.title,
+    },
+    {
+      name: 'MaherZubair',
+      url: `https://api.maher-zubair.tech/download/ytmp3?url=${encodeURIComponent(videoUrl)}`,
+      extract: (d: any) => d?.result?.download?.url || d?.result?.url,
+      title: (d: any) => d?.result?.title,
+    },
+    {
+      name: 'BK9',
+      url: `https://bk9.fun/download/ytmp3?url=${encodeURIComponent(videoUrl)}`,
+      extract: (d: any) => d?.BK9?.downloadUrl || d?.result?.url,
+      title: (d: any) => d?.BK9?.title,
+    },
+  ];
+
+  for (const p of providers) {
+    try {
+      logger.info({ provider: p.name, id }, 'Attempting cloud MP3 fallback');
+      const { data } = await axios.get(p.url, {
+        headers: { 'User-Agent': UA, Accept: 'application/json' },
+        timeout: 25000,
+      });
+      const downloadUrl = p.extract(data);
+      if (downloadUrl && typeof downloadUrl === 'string' && downloadUrl.startsWith('http')) {
+        const localFile = await downloadRemoteToTemp(downloadUrl);
+        logger.info({ provider: p.name, id }, 'Cloud MP3 fallback succeeded');
+        return {
+          title: p.title(data) || '',
+          url: localFile,
+          quality: 'MP3',
+          mimetype: 'audio/mpeg',
+          cleanup: () => fs.promises.unlink(localFile).catch(() => undefined),
+        };
+      }
+    } catch (e) {
+      logger.warn({ provider: p.name, err: String(e) }, 'Cloud MP3 provider failed');
+    }
+  }
+  return null;
+}
+
+/** Free public cloud API fallbacks for video */
+async function cloudMp4Fallback(videoUrl: string): Promise<DlResult | null> {
+  const id = extractYtId(videoUrl);
+  const providers = [
+    {
+      name: 'GiftedTech',
+      url: `https://api.giftedtech.my.id/api/download/ytmp4?apikey=gifted-md&url=${encodeURIComponent(videoUrl)}`,
+      extract: (d: any) => d?.result?.download_url || d?.result?.url,
+      title: (d: any) => d?.result?.title,
+    },
+    {
+      name: 'MaherZubair',
+      url: `https://api.maher-zubair.tech/download/ytmp4?url=${encodeURIComponent(videoUrl)}`,
+      extract: (d: any) => d?.result?.download?.url || d?.result?.url,
+      title: (d: any) => d?.result?.title,
+    },
+    {
+      name: 'BK9',
+      url: `https://bk9.fun/download/ytmp4?url=${encodeURIComponent(videoUrl)}`,
+      extract: (d: any) => d?.BK9?.downloadUrl || d?.result?.url,
+      title: (d: any) => d?.BK9?.title,
+    },
+  ];
+
+  for (const p of providers) {
+    try {
+      logger.info({ provider: p.name, id }, 'Attempting cloud MP4 fallback');
+      const { data } = await axios.get(p.url, {
+        headers: { 'User-Agent': UA, Accept: 'application/json' },
+        timeout: 30000,
+      });
+      const downloadUrl = p.extract(data);
+      if (downloadUrl && typeof downloadUrl === 'string' && downloadUrl.startsWith('http')) {
+        const localFile = await downloadRemoteToTemp(downloadUrl);
+        logger.info({ provider: p.name, id }, 'Cloud MP4 fallback succeeded');
+        return {
+          title: p.title(data) || '',
+          url: localFile,
+          quality: '720p MP4',
+          mimetype: 'video/mp4',
+          cleanup: () => fs.promises.unlink(localFile).catch(() => undefined),
+        };
+      }
+    } catch (e) {
+      logger.warn({ provider: p.name, err: String(e) }, 'Cloud MP4 provider failed');
+    }
+  }
+  return null;
 }
 
 export async function ytMp3(videoUrl: string): Promise<DlResult> {
@@ -571,9 +706,7 @@ export async function ytMp3(videoUrl: string): Promise<DlResult> {
   const rapid = await rapidApiMp3(videoUrl);
   if (rapid) return rapid;
 
-  // The original provider became API-key-only in September 2026. Keep it as
-  // an optional fast path for owners who configure a key, otherwise use the
-  // local yt-dlp fallback instead of returning a misleading generic failure.
+  // 2) Optional David Cyril keyed fast path
   const apiKey = process.env.DAVID_CYRIL_API_KEY?.trim();
   if (apiKey) {
     try {
@@ -593,9 +726,15 @@ export async function ytMp3(videoUrl: string): Promise<DlResult> {
         };
       }
     } catch {
-      /* key/provider failed — local fallback below */
+      /* key/provider failed — fallback below */
     }
   }
+
+  // 3) Multi-provider cloud fallback (GiftedTech, MaherZubair, BK9)
+  const cloud = await cloudMp3Fallback(videoUrl);
+  if (cloud) return cloud;
+
+  // 4) Local yt-dlp fallback
   return ytDlpDownload(videoUrl, 'audio');
 }
 
@@ -619,9 +758,13 @@ export async function ytMp4(videoUrl: string): Promise<DlResult> {
         };
       }
     } catch {
-      /* key/provider failed — local fallback below */
+      /* key/provider failed — fallback below */
     }
   }
+
+  const cloud = await cloudMp4Fallback(videoUrl);
+  if (cloud) return cloud;
+
   return ytDlpDownload(videoUrl, 'video');
 }
 
