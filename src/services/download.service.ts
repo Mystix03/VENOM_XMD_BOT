@@ -383,7 +383,7 @@ async function cleanupYtDlp(prefix: string, explicitFile?: string): Promise<void
  * standalone build, while the official Deno npm package handles YouTube's JS
  * challenges; no Render dashboard variables or system Python are required.
  */
-async function ytDlpDownload(
+export async function ytDlpDownload(
   videoUrl: string,
   kind: 'audio' | 'video',
 ): Promise<DlResult> {
@@ -481,6 +481,8 @@ async function ytDlpDownload(
   }
 }
 
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /** RapidAPI YouTube MP3 fast path (youtube-mp36 by gitnol) */
 async function rapidApiMp3(videoUrl: string): Promise<DlResult | null> {
   const key = process.env.RAPIDAPI_KEY?.trim();
@@ -489,28 +491,53 @@ async function rapidApiMp3(videoUrl: string): Promise<DlResult | null> {
   if (!id) return null;
 
   try {
-    const { data } = await axios.get('https://youtube-mp36.p.rapidapi.com/dl', {
-      params: { id },
-      headers: {
-        'x-rapidapi-key': key,
-        'x-rapidapi-host': 'youtube-mp36.p.rapidapi.com',
-      },
-      timeout: 25000,
-    });
+    const headers = {
+      'x-rapidapi-key': key,
+      'x-rapidapi-host': 'youtube-mp36.p.rapidapi.com',
+    };
 
-    if (data?.link && data?.status !== 'fail') {
-      logger.info({ id, title: data.title }, 'RapidAPI MP3 download resolved');
-      return {
-        title: data.title || '',
-        url: data.link,
-        quality: '320kbps MP3',
-        mimetype: 'audio/mpeg',
-      };
+    // Poll while RapidAPI converts the audio (status is "processing" initially)
+    for (let attempt = 1; attempt <= 6; attempt++) {
+      const { data } = await axios.get('https://youtube-mp36.p.rapidapi.com/dl', {
+        params: { id },
+        headers,
+        timeout: 10000,
+      });
+
+      if (data?.status === 'success' && data?.link) {
+        logger.info({ id, title: data.title, attempt }, 'RapidAPI MP3 download resolved');
+        return {
+          title: data.title || '',
+          url: data.link,
+          quality: '320kbps MP3',
+          mimetype: 'audio/mpeg',
+        };
+      }
+
+      if (data?.status === 'fail') {
+        logger.warn({ id, msg: data?.msg }, 'RapidAPI conversion failed');
+        break;
+      }
+
+      // If still converting on RapidAPI, wait 2s and poll again
+      if (data?.status === 'processing' || data?.msg === 'in_progress') {
+        await wait(2000);
+      } else if (data?.link) {
+        return {
+          title: data.title || '',
+          url: data.link,
+          quality: '320kbps MP3',
+          mimetype: 'audio/mpeg',
+        };
+      } else {
+        break;
+      }
     }
+    return null;
   } catch (err) {
     logger.warn({ err: String(err) }, 'RapidAPI MP3 fast path failed, falling back to local');
+    return null;
   }
-  return null;
 }
 
 export async function ytMp3(videoUrl: string): Promise<DlResult> {

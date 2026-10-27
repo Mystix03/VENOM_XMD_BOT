@@ -1,6 +1,6 @@
 import type { Command } from '../../types/command.type';
 import { reply, react, editMessage } from '../../services/message.service';
-import { resolveYt, ytMp3, formatViews } from '../../services/download.service';
+import { resolveYt, ytMp3, ytDlpDownload, formatViews } from '../../services/download.service';
 import { logger } from '../../utils/logger';
 import { isSudo } from '../../middleware/permission';
 
@@ -65,16 +65,35 @@ const play: Command = {
       }
 
       stage = 'WhatsApp upload';
-      const ext = dl.url.endsWith('.m4a') ? 'm4a' : 'mp3';
-      await sock.sendMessage(
-        msg.chat,
-        {
-          audio: { url: dl.url },
-          mimetype: dl.mimetype || 'audio/mpeg',
-          fileName: `${v.title}.${ext}`.replace(/[\\/:*?"<>|]/g, ''),
-        },
-        { quoted: msg.raw },
-      );
+      const sendAudio = async (mediaUrl: string, mediaMime?: string) => {
+        const ext = mediaUrl.endsWith('.m4a') ? 'm4a' : 'mp3';
+        await sock.sendMessage(
+          msg.chat,
+          {
+            audio: { url: mediaUrl },
+            mimetype: mediaMime || 'audio/mpeg',
+            fileName: `${v.title}.${ext}`.replace(/[\\/:*?"<>|]/g, ''),
+          },
+          { quoted: msg.raw },
+        );
+      };
+
+      try {
+        await sendAudio(dl.url, dl.mimetype);
+      } catch (uploadErr) {
+        // If remote RapidAPI CDN link was incomplete/404'd, seamlessly fall back to local yt-dlp
+        if (dl.url.startsWith('http')) {
+          logger.warn(
+            { uploadErr: String(uploadErr) },
+            'Remote audio link failed on WhatsApp upload, falling back to local yt-dlp',
+          );
+          dl = await ytDlpDownload(v.url, 'audio');
+          await sendAudio(dl.url, dl.mimetype);
+        } else {
+          throw uploadErr;
+        }
+      }
+
       await react(sock, msg, '✅');
 
       if (statusMsg?.key) {
@@ -107,4 +126,3 @@ const play: Command = {
 };
 
 export default play;
-
