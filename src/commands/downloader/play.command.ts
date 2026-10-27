@@ -4,6 +4,13 @@ import { resolveYt, ytMp3, ytDlpDownload, formatViews } from '../../services/dow
 import { logger } from '../../utils/logger';
 import { isSudo } from '../../middleware/permission';
 
+function renderProgressBar(pct: number, length = 10): string {
+  const clamped = Math.min(100, Math.max(0, Math.round(pct)));
+  const filled = Math.min(length, Math.max(0, Math.round((clamped / 100) * length)));
+  const empty = length - filled;
+  return `[${'█'.repeat(filled)}${'░'.repeat(empty)}] ${clamped}%`;
+}
+
 const play: Command = {
   name: 'play',
   aliases: ['song', 'ytmp3', 'yta'],
@@ -15,26 +22,37 @@ const play: Command = {
       await reply(sock, msg, 'ℹ️ Usage: *play <song name>*\n\nExample: _play alan walker faded_');
       return;
     }
-    await react(sock, msg, '🔎');
-    let dl: Awaited<ReturnType<typeof ytMp3>> | undefined;
+    await react(sock, msg, '⏳');
+    const t0 = Date.now();
     let stage = 'search';
     let progressTimer: NodeJS.Timeout | undefined;
+    let dl: Awaited<ReturnType<typeof ytMp3>> | undefined;
+    let statusMsg: Awaited<ReturnType<typeof reply>> | undefined;
 
     try {
+      // 0%: Bot received command & begins searching YouTube
+      statusMsg = await reply(
+        sock,
+        msg,
+        `⏳ ${renderProgressBar(0)}\n_Receiving request & searching YouTube for: "${text.slice(0, 60)}"…_`,
+      );
+
       const v = await resolveYt(text);
       const baseInfo = `🎵 *${v.title}*\n👤 ${v.author}\n⏱️ ${v.duration}  •  👁️ ${formatViews(v.views)}`;
 
-      const statusMsg = await reply(
-        sock,
-        msg,
-        `${baseInfo}\n\n⏳ _Downloading audio… (0s)_`,
-      );
-      await react(sock, msg, '⏳');
-
       stage = 'download';
-      const t0 = Date.now();
+      let percent = 20;
 
-      // Live progress timer: tick every 2.5 seconds with live elapsed seconds
+      if (statusMsg?.key) {
+        await editMessage(
+          sock,
+          msg.chat,
+          statusMsg.key,
+          `${baseInfo}\n\n⏳ ${renderProgressBar(percent)}\n_Converting & downloading audio…_`,
+        );
+      }
+
+      // Smooth progress ticker: scales from 20% up to 95% while converting / downloading
       if (statusMsg?.key) {
         let tick = 0;
         const spinner = ['⏳', '⌛'];
@@ -42,25 +60,28 @@ const play: Command = {
           tick++;
           const elapsed = ((Date.now() - t0) / 1000).toFixed(0);
           const icon = spinner[tick % spinner.length];
+          percent = Math.min(95, percent + Math.max(2, Math.round((96 - percent) * 0.22)));
           editMessage(
             sock,
             msg.chat,
             statusMsg.key,
-            `${baseInfo}\n\n${icon} _Downloading audio… (${elapsed}s)_`,
+            `${baseInfo}\n\n${icon} ${renderProgressBar(percent)} (${elapsed}s)\n_Converting & downloading audio…_`,
           );
-        }, 2500);
+        }, 1600);
       }
 
       dl = await ytMp3(v.url);
       clearInterval(progressTimer);
 
       const downloadSec = ((Date.now() - t0) / 1000).toFixed(1);
+
+      // 100%: Download and conversion complete; now uploading to WhatsApp
       if (statusMsg?.key) {
         await editMessage(
           sock,
           msg.chat,
           statusMsg.key,
-          `${baseInfo}\n\n⚡ _Downloaded in ${downloadSec}s! Uploading to WhatsApp…_`,
+          `${baseInfo}\n\n⚡ ${renderProgressBar(100)} (${downloadSec}s)\n_Uploading MP3 to WhatsApp…_`,
         );
       }
 
@@ -95,13 +116,14 @@ const play: Command = {
       }
 
       await react(sock, msg, '✅');
+      const totalSec = ((Date.now() - t0) / 1000).toFixed(1);
 
       if (statusMsg?.key) {
         await editMessage(
           sock,
           msg.chat,
           statusMsg.key,
-          `${baseInfo}\n\n✅ _Completed in ${downloadSec}s!_`,
+          `${baseInfo}\n\n✅ ${renderProgressBar(100)}\n_Uploaded in ${totalSec}s! Enjoy the music 🎧_`,
         );
       }
     } catch (err) {
@@ -113,11 +135,12 @@ const play: Command = {
             .replace(/:\/\/[^\s/@]+:[^\s/@]+@/g, '://***:***@')
             .slice(-700)}`
         : '';
-      await reply(
-        sock,
-        msg,
-        `❌ Could not fetch that song (${stage} failed). Please try again shortly.${ownerDetail}`,
-      );
+      const errMsg = `❌ Could not fetch that song (${stage} failed). Please try again shortly.${ownerDetail}`;
+      if (statusMsg?.key) {
+        await editMessage(sock, msg.chat, statusMsg.key, errMsg);
+      } else {
+        await reply(sock, msg, errMsg);
+      }
     } finally {
       clearInterval(progressTimer);
       await dl?.cleanup?.();

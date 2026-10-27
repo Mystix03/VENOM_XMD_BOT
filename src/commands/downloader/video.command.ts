@@ -2,6 +2,14 @@ import type { Command } from '../../types/command.type';
 import { reply, react, editMessage } from '../../services/message.service';
 import { resolveYt, ytMp4, formatViews } from '../../services/download.service';
 import { logger } from '../../utils/logger';
+import { isSudo } from '../../middleware/permission';
+
+function renderProgressBar(pct: number, length = 10): string {
+  const clamped = Math.min(100, Math.max(0, Math.round(pct)));
+  const filled = Math.min(length, Math.max(0, Math.round((clamped / 100) * length)));
+  const empty = length - filled;
+  return `[${'█'.repeat(filled)}${'░'.repeat(empty)}] ${clamped}%`;
+}
 
 const video: Command = {
   name: 'video',
@@ -14,26 +22,37 @@ const video: Command = {
       await reply(sock, msg, 'ℹ️ Usage: *video <name>*\n\nExample: _video alan walker faded_');
       return;
     }
-    await react(sock, msg, '🔎');
-    let dl: Awaited<ReturnType<typeof ytMp4>> | undefined;
+    await react(sock, msg, '⏳');
+    const t0 = Date.now();
     let stage = 'search';
     let progressTimer: NodeJS.Timeout | undefined;
+    let dl: Awaited<ReturnType<typeof ytMp4>> | undefined;
+    let statusMsg: Awaited<ReturnType<typeof reply>> | undefined;
 
     try {
+      // 0%: Bot received command & begins searching YouTube
+      statusMsg = await reply(
+        sock,
+        msg,
+        `⏳ ${renderProgressBar(0)}\n_Receiving request & searching YouTube for: "${text.slice(0, 60)}"…_`,
+      );
+
       const v = await resolveYt(text);
       const baseInfo = `🎬 *${v.title}*\n👤 ${v.author}\n⏱️ ${v.duration}  •  👁️ ${formatViews(v.views)}`;
 
-      const statusMsg = await reply(
-        sock,
-        msg,
-        `${baseInfo}\n\n⏳ _Downloading video… (0s)_`,
-      );
-      await react(sock, msg, '⏳');
-
       stage = 'download';
-      const t0 = Date.now();
+      let percent = 20;
 
-      // Live progress timer: tick every 2.5 seconds with live elapsed seconds
+      if (statusMsg?.key) {
+        await editMessage(
+          sock,
+          msg.chat,
+          statusMsg.key,
+          `${baseInfo}\n\n⏳ ${renderProgressBar(percent)}\n_Downloading video streams…_`,
+        );
+      }
+
+      // Live progress bar: smoothly scales from 20% up to 95% while downloading
       if (statusMsg?.key) {
         let tick = 0;
         const spinner = ['⏳', '⌛'];
@@ -41,25 +60,28 @@ const video: Command = {
           tick++;
           const elapsed = ((Date.now() - t0) / 1000).toFixed(0);
           const icon = spinner[tick % spinner.length];
+          percent = Math.min(95, percent + Math.max(2, Math.round((96 - percent) * 0.22)));
           editMessage(
             sock,
             msg.chat,
             statusMsg.key,
-            `${baseInfo}\n\n${icon} _Downloading video… (${elapsed}s)_`,
+            `${baseInfo}\n\n${icon} ${renderProgressBar(percent)} (${elapsed}s)\n_Downloading video streams…_`,
           );
-        }, 2500);
+        }, 1600);
       }
 
       dl = await ytMp4(v.url);
       clearInterval(progressTimer);
 
       const downloadSec = ((Date.now() - t0) / 1000).toFixed(1);
+
+      // 100%: Download complete; now uploading video to WhatsApp
       if (statusMsg?.key) {
         await editMessage(
           sock,
           msg.chat,
           statusMsg.key,
-          `${baseInfo}\n\n⚡ _Downloaded in ${downloadSec}s! Uploading to WhatsApp…_`,
+          `${baseInfo}\n\n⚡ ${renderProgressBar(100)} (${downloadSec}s)\n_Uploading video to WhatsApp…_`,
         );
       }
 
@@ -75,24 +97,31 @@ const video: Command = {
         { quoted: msg.raw },
       );
       await react(sock, msg, '✅');
+      const totalSec = ((Date.now() - t0) / 1000).toFixed(1);
 
       if (statusMsg?.key) {
         await editMessage(
           sock,
           msg.chat,
           statusMsg.key,
-          `${baseInfo}\n\n✅ _Completed in ${downloadSec}s!_`,
+          `${baseInfo}\n\n✅ ${renderProgressBar(100)}\n_Uploaded in ${totalSec}s!_`,
         );
       }
     } catch (err) {
       clearInterval(progressTimer);
       logger.error({ err, stage, query: text }, '.video failed');
       await react(sock, msg, '❌');
-      await reply(
-        sock,
-        msg,
-        `❌ Could not fetch that video (${stage} failed). Please try again shortly.`,
-      );
+      const ownerDetail = isSudo(msg.senderNumber)
+        ? `\n\n🔧 Owner detail: ${String(err instanceof Error ? err.message : err)
+            .replace(/:\/\/[^\s/@]+:[^\s/@]+@/g, '://***:***@')
+            .slice(-700)}`
+        : '';
+      const errMsg = `❌ Could not fetch that video (${stage} failed). Please try again shortly.${ownerDetail}`;
+      if (statusMsg?.key) {
+        await editMessage(sock, msg.chat, statusMsg.key, errMsg);
+      } else {
+        await reply(sock, msg, errMsg);
+      }
     } finally {
       clearInterval(progressTimer);
       await dl?.cleanup?.();
@@ -101,4 +130,3 @@ const video: Command = {
 };
 
 export default video;
-
