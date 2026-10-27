@@ -1,7 +1,7 @@
 import type { Command } from '../../types/command.type';
 import fs from 'fs';
 import { reply, react, editMessage } from '../../services/message.service';
-import { resolveYt, ytMp3, ytDlpDownload, formatViews } from '../../services/download.service';
+import { resolveYt, ytMp3, formatViews } from '../../services/download.service';
 import { logger } from '../../utils/logger';
 import { isSudo } from '../../middleware/permission';
 
@@ -88,43 +88,21 @@ const play: Command = {
       }
 
       stage = 'WhatsApp upload';
-      const sendAudio = async (mediaUrl: string, mediaMime?: string) => {
-        const ext = mediaUrl.endsWith('.m4a') ? 'm4a' : 'mp3';
-        const audioSource =
-          !mediaUrl.startsWith('http') && fs.existsSync(mediaUrl)
-            ? fs.readFileSync(mediaUrl)
-            : { url: mediaUrl };
+      const ext = dl.url.endsWith('.m4a') ? 'm4a' : 'mp3';
+      const audioSource =
+        !dl.url.startsWith('http') && fs.existsSync(dl.url)
+          ? fs.readFileSync(dl.url)
+          : { url: dl.url };
 
-        await sock.sendMessage(
-          msg.chat,
-          {
-            audio: audioSource,
-            mimetype: mediaMime || 'audio/mpeg',
-            fileName: `${v.title}.${ext}`.replace(/[\\/:*?"<>|]/g, ''),
-          },
-          { quoted: msg.raw },
-        );
-      };
-
-      try {
-        await sendAudio(dl.url, dl.mimetype);
-      } catch (uploadErr) {
-        // If remote link failed on WhatsApp upload, attempt yt-dlp fallback if available
-        if (dl.url.startsWith('http')) {
-          logger.warn(
-            { uploadErr: String(uploadErr) },
-            'Remote audio link failed on WhatsApp upload, trying fallback',
-          );
-          try {
-            dl = await ytDlpDownload(v.url, 'audio');
-            await sendAudio(dl.url, dl.mimetype);
-          } catch {
-            throw uploadErr; // rethrow the uploadErr if yt-dlp also fails
-          }
-        } else {
-          throw uploadErr;
-        }
-      }
+      await sock.sendMessage(
+        msg.chat,
+        {
+          audio: audioSource,
+          mimetype: dl.mimetype || 'audio/mpeg',
+          fileName: `${v.title}.${ext}`.replace(/[\\/:*?"<>|]/g, ''),
+        },
+        { quoted: msg.raw },
+      );
 
       await react(sock, msg, '✅');
       const totalSec = ((Date.now() - t0) / 1000).toFixed(1);
@@ -142,9 +120,9 @@ const play: Command = {
       logger.error({ err, stage, query: text }, '.play failed');
       await react(sock, msg, '❌');
       const ownerDetail = isSudo(msg.senderNumber)
-        ? `\n\n🔧 Owner detail: ${String(err instanceof Error ? err.message : err)
+        ? `\n\n🔧 Detail: ${String(err instanceof Error ? err.message : err)
             .replace(/:\/\/[^\s/@]+:[^\s/@]+@/g, '://***:***@')
-            .slice(-700)}`
+            .slice(-400)}`
         : '';
       const errMsg = `❌ Could not fetch that song (${stage} failed). Please try again shortly.${ownerDetail}`;
       const statusKey = statusMsg?.key;

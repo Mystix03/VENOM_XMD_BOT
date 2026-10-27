@@ -483,10 +483,7 @@ export async function ytDlpDownload(
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function downloadRemoteToTemp(
-  url: string,
-  extraHeaders?: Record<string, string>,
-): Promise<string> {
+async function downloadRemoteToTemp(url: string): Promise<string> {
   const tempFile = path.join(
     os.tmpdir(),
     `venom-dl-${crypto.randomUUID()}.mp3`,
@@ -495,43 +492,25 @@ async function downloadRemoteToTemp(
   let targetUrl = url.trim();
   if (targetUrl.startsWith('//')) {
     targetUrl = `https:${targetUrl}`;
-  } else if (targetUrl.startsWith('/')) {
-    targetUrl = `https://youtube-mp36.p.rapidapi.com${targetUrl}`;
   }
 
-  const reqHeaders: Record<string, string> = {
-    'User-Agent': UA,
-    Accept: '*/*',
-    ...(extraHeaders || {}),
-  };
+  // Use native fetch to avoid axios query-string double-encoding issues on signed URLs
+  const response = await fetch(targetUrl, {
+    headers: {
+      'User-Agent': UA,
+      Accept: '*/*',
+      Referer: 'https://rapidapi.com/',
+    },
+    redirect: 'follow',
+  });
 
-  try {
-    const response = await axios.get<ArrayBuffer>(targetUrl, {
-      responseType: 'arraybuffer',
-      headers: reqHeaders,
-      timeout: 45000,
-      maxRedirects: 5,
-    });
-    await fs.promises.writeFile(tempFile, Buffer.from(response.data));
-    return tempFile;
-  } catch (err: any) {
-    // If request with extra headers failed (e.g. 404 from external CDN redirect), retry cleanly without them
-    if (extraHeaders && Object.keys(extraHeaders).length > 0) {
-      try {
-        const response2 = await axios.get<ArrayBuffer>(targetUrl, {
-          responseType: 'arraybuffer',
-          headers: { 'User-Agent': UA, Accept: '*/*' },
-          timeout: 45000,
-          maxRedirects: 5,
-        });
-        await fs.promises.writeFile(tempFile, Buffer.from(response2.data));
-        return tempFile;
-      } catch {
-        /* let original error throw */
-      }
-    }
-    throw err;
+  if (!response.ok) {
+    throw new Error(`CDN download failed with HTTP ${response.status} ${response.statusText}`);
   }
+
+  const arrayBuffer = await response.arrayBuffer();
+  await fs.promises.writeFile(tempFile, Buffer.from(arrayBuffer));
+  return tempFile;
 }
 
 /** RapidAPI YouTube MP3 fast path (youtube-mp36 by gitnol) */
@@ -565,7 +544,7 @@ async function rapidApiMp3(videoUrl: string): Promise<DlResult | null> {
 
       if (isReady) {
         try {
-          const localFile = await downloadRemoteToTemp(data.link, headers);
+          const localFile = await downloadRemoteToTemp(data.link);
           logger.info(
             { id, title: data.title, attempt },
             'RapidAPI MP3 downloaded to local file successfully',
@@ -734,8 +713,7 @@ export async function ytMp3(videoUrl: string): Promise<DlResult> {
   const cloud = await cloudMp3Fallback(videoUrl);
   if (cloud) return cloud;
 
-  // 4) Local yt-dlp fallback
-  return ytDlpDownload(videoUrl, 'audio');
+  throw new Error('All audio download providers are currently busy or unavailable. Please try again shortly.');
 }
 
 export async function ytMp4(videoUrl: string): Promise<DlResult> {
@@ -765,7 +743,7 @@ export async function ytMp4(videoUrl: string): Promise<DlResult> {
   const cloud = await cloudMp4Fallback(videoUrl);
   if (cloud) return cloud;
 
-  return ytDlpDownload(videoUrl, 'video');
+  throw new Error('All video download providers are currently busy or unavailable. Please try again shortly.');
 }
 
 /** ────────────────────────── TikTok ────────────────────────── */
