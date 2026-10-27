@@ -42,18 +42,19 @@ const play: Command = {
 
       stage = 'download';
       let percent = 20;
+      const statusKey = statusMsg?.key;
 
-      if (statusMsg?.key) {
+      if (statusKey) {
         await editMessage(
           sock,
           msg.chat,
-          statusMsg.key,
+          statusKey,
           `${baseInfo}\n\n⏳ ${renderProgressBar(percent)}\n_Converting & downloading audio…_`,
         );
       }
 
       // Smooth progress ticker: scales from 20% up to 95% while converting / downloading
-      if (statusMsg?.key) {
+      if (statusKey) {
         let tick = 0;
         const spinner = ['⏳', '⌛'];
         progressTimer = setInterval(() => {
@@ -64,7 +65,7 @@ const play: Command = {
           editMessage(
             sock,
             msg.chat,
-            statusMsg.key,
+            statusKey,
             `${baseInfo}\n\n${icon} ${renderProgressBar(percent)} (${elapsed}s)\n_Converting & downloading audio…_`,
           );
         }, 1600);
@@ -76,11 +77,11 @@ const play: Command = {
       const downloadSec = ((Date.now() - t0) / 1000).toFixed(1);
 
       // 100%: Download and conversion complete; now uploading to WhatsApp
-      if (statusMsg?.key) {
+      if (statusKey) {
         await editMessage(
           sock,
           msg.chat,
-          statusMsg.key,
+          statusKey,
           `${baseInfo}\n\n⚡ ${renderProgressBar(100)} (${downloadSec}s)\n_Uploading MP3 to WhatsApp…_`,
         );
       }
@@ -118,11 +119,11 @@ const play: Command = {
       await react(sock, msg, '✅');
       const totalSec = ((Date.now() - t0) / 1000).toFixed(1);
 
-      if (statusMsg?.key) {
+      if (statusKey) {
         await editMessage(
           sock,
           msg.chat,
-          statusMsg.key,
+          statusKey,
           `${baseInfo}\n\n✅ ${renderProgressBar(100)}\n_Uploaded in ${totalSec}s! Enjoy the music 🎧_`,
         );
       }
@@ -136,8 +137,9 @@ const play: Command = {
             .slice(-700)}`
         : '';
       const errMsg = `❌ Could not fetch that song (${stage} failed). Please try again shortly.${ownerDetail}`;
-      if (statusMsg?.key) {
-        await editMessage(sock, msg.chat, statusMsg.key, errMsg);
+      const statusKey = statusMsg?.key;
+      if (statusKey) {
+        await editMessage(sock, msg.chat, statusKey, errMsg);
       } else {
         await reply(sock, msg, errMsg);
       }
