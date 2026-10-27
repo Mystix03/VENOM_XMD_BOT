@@ -481,7 +481,43 @@ async function ytDlpDownload(
   }
 }
 
+/** RapidAPI YouTube MP3 fast path (youtube-mp36 by gitnol) */
+async function rapidApiMp3(videoUrl: string): Promise<DlResult | null> {
+  const key = process.env.RAPIDAPI_KEY?.trim();
+  if (!key) return null;
+  const id = extractYtId(videoUrl);
+  if (!id) return null;
+
+  try {
+    const { data } = await axios.get('https://youtube-mp36.p.rapidapi.com/dl', {
+      params: { id },
+      headers: {
+        'x-rapidapi-key': key,
+        'x-rapidapi-host': 'youtube-mp36.p.rapidapi.com',
+      },
+      timeout: 25000,
+    });
+
+    if (data?.link && data?.status !== 'fail') {
+      logger.info({ id, title: data.title }, 'RapidAPI MP3 download resolved');
+      return {
+        title: data.title || '',
+        url: data.link,
+        quality: '320kbps MP3',
+        mimetype: 'audio/mpeg',
+      };
+    }
+  } catch (err) {
+    logger.warn({ err: String(err) }, 'RapidAPI MP3 fast path failed, falling back to local');
+  }
+  return null;
+}
+
 export async function ytMp3(videoUrl: string): Promise<DlResult> {
+  // 1) RapidAPI fast path (cloud conversion, zero cookie/datacenter block issue)
+  const rapid = await rapidApiMp3(videoUrl);
+  if (rapid) return rapid;
+
   // The original provider became API-key-only in September 2026. Keep it as
   // an optional fast path for owners who configure a key, otherwise use the
   // local yt-dlp fallback instead of returning a misleading generic failure.
