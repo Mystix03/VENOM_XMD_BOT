@@ -119,19 +119,51 @@ export async function startConnection(): Promise<void> {
   });
 }
 
-/** Sends a startup message to the owner when enabled via settings. */
+/** Sends a deployment notification to owner and self-chat when the bot comes online. */
+let hasSentDeployNotice = false;
+
 async function sendStartupMessage(sock: WASocket): Promise<void> {
+  if (hasSentDeployNotice) return;
+  hasSentDeployNotice = true;
+
   try {
-    // Lazy import to avoid a circular dependency at module load.
-    const { settingsRepo } = await import(
-      '../database/repositories/settings.repo'
-    );
-    if (!settingsRepo.getBool('startupmsg')) return;
-    const owner = env.ownerNumbers[0];
-    if (!owner) return;
-    await sock.sendMessage(`${owner}@s.whatsapp.net`, {
-      text: `🕷️ *${env.botName}* is online!\n⏱️ ${new Date().toLocaleString()}`,
+    const targets = new Set<string>();
+
+    // 1. Bot's own number ("Message Yourself" / You chat)
+    if (sock.user?.id) {
+      const selfNum = sock.user.id.split(':')[0].replace(/[^0-9]/g, '');
+      if (selfNum) targets.add(`${selfNum}@s.whatsapp.net`);
+    }
+
+    // 2. Configured owner number(s)
+    for (const owner of env.ownerNumbers) {
+      const clean = owner.replace(/[^0-9]/g, '');
+      if (clean) targets.add(`${clean}@s.whatsapp.net`);
+    }
+
+    if (targets.size === 0) return;
+
+    const time = new Date().toLocaleString([], {
+      dateStyle: 'medium',
+      timeStyle: 'short',
     });
+    const host = process.env.RENDER ? 'Render Cloud ☁️' : 'Online 🚀';
+
+    const text =
+      `🕷️ *${env.botName} Deployed Successfully!*\n\n` +
+      `✅ *Status:* Online & Ready\n` +
+      `⏱️ *Time:* ${time}\n` +
+      `🌐 *Host:* ${host}\n` +
+      `⚡ *Prefix:* \`${env.prefix}\`\n\n` +
+      `_Type *${env.prefix}menu* to test commands._`;
+
+    for (const jid of targets) {
+      await sock.sendMessage(jid, { text }).catch((err) => {
+        logger.debug({ err, jid }, 'Failed to deliver deploy notification to target');
+      });
+    }
+
+    logger.info({ targets: Array.from(targets) }, 'Deployment notification message sent');
   } catch (err) {
     logger.debug({ err }, 'startup message failed');
   }
