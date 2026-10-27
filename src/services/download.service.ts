@@ -483,6 +483,23 @@ export async function ytDlpDownload(
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+async function downloadRemoteToTemp(url: string): Promise<string> {
+  const tempFile = path.join(
+    os.tmpdir(),
+    `venom-dl-${crypto.randomUUID()}.mp3`,
+  );
+  const response = await axios.get<ArrayBuffer>(url, {
+    responseType: 'arraybuffer',
+    headers: {
+      'User-Agent': UA,
+      Accept: '*/*',
+    },
+    timeout: 35000,
+  });
+  await fs.promises.writeFile(tempFile, Buffer.from(response.data));
+  return tempFile;
+}
+
 /** RapidAPI YouTube MP3 fast path (youtube-mp36 by gitnol) */
 async function rapidApiMp3(videoUrl: string): Promise<DlResult | null> {
   const key = process.env.RAPIDAPI_KEY?.trim();
@@ -497,21 +514,41 @@ async function rapidApiMp3(videoUrl: string): Promise<DlResult | null> {
     };
 
     // Poll while RapidAPI converts the audio (status is "processing" initially)
-    for (let attempt = 1; attempt <= 6; attempt++) {
+    for (let attempt = 1; attempt <= 8; attempt++) {
       const { data } = await axios.get('https://youtube-mp36.p.rapidapi.com/dl', {
         params: { id },
         headers,
         timeout: 10000,
       });
 
-      if (data?.status === 'success' && data?.link) {
-        logger.info({ id, title: data.title, attempt }, 'RapidAPI MP3 download resolved');
-        return {
-          title: data.title || '',
-          url: data.link,
-          quality: '320kbps MP3',
-          mimetype: 'audio/mpeg',
-        };
+      logger.info(
+        { id, attempt, status: data?.status, msg: data?.msg },
+        'RapidAPI response poll',
+      );
+
+      const isReady =
+        (data?.status === 'success' || data?.status === 'ok') && Boolean(data?.link);
+
+      if (isReady) {
+        try {
+          const localFile = await downloadRemoteToTemp(data.link);
+          logger.info(
+            { id, title: data.title, attempt },
+            'RapidAPI MP3 downloaded to local file successfully',
+          );
+          return {
+            title: data.title || '',
+            url: localFile,
+            quality: '320kbps MP3',
+            mimetype: 'audio/mpeg',
+            cleanup: () => fs.promises.unlink(localFile).catch(() => undefined),
+          };
+        } catch (downloadErr) {
+          logger.warn(
+            { downloadErr: String(downloadErr) },
+            'RapidAPI CDN link not ready yet, retrying poll...',
+          );
+        }
       }
 
       if (data?.status === 'fail') {
@@ -519,19 +556,8 @@ async function rapidApiMp3(videoUrl: string): Promise<DlResult | null> {
         break;
       }
 
-      // If still converting on RapidAPI, wait 2s and poll again
-      if (data?.status === 'processing' || data?.msg === 'in_progress') {
-        await wait(2000);
-      } else if (data?.link) {
-        return {
-          title: data.title || '',
-          url: data.link,
-          quality: '320kbps MP3',
-          mimetype: 'audio/mpeg',
-        };
-      } else {
-        break;
-      }
+      // Wait 2.5s before polling again
+      await wait(2500);
     }
     return null;
   } catch (err) {

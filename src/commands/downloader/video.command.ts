@@ -1,4 +1,5 @@
 import type { Command } from '../../types/command.type';
+import fs from 'fs';
 import { reply, react, editMessage } from '../../services/message.service';
 import { resolveYt, ytMp4, formatViews } from '../../services/download.service';
 import { logger } from '../../utils/logger';
@@ -87,10 +88,15 @@ const video: Command = {
       }
 
       stage = 'WhatsApp upload';
+      const videoSource =
+        !dl.url.startsWith('http') && fs.existsSync(dl.url)
+          ? fs.readFileSync(dl.url)
+          : { url: dl.url };
+
       await sock.sendMessage(
         msg.chat,
         {
-          video: { url: dl.url },
+          video: videoSource,
           mimetype: dl.mimetype || 'video/mp4',
           caption: `🎬 ${v.title}${dl.quality ? `\n📺 ${dl.quality}` : ''}\n⚡ Processed in ${downloadSec}s`,
           fileName: `${v.title}.mp4`.replace(/[\\/:*?"<>|]/g, ''),
